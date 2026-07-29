@@ -172,27 +172,73 @@ end
 # does not elide an empty try/finally. Splicing `ex` verbatim (rather than
 # behind a closure or temporary) also preserves its line numbers and lets
 # `return`, `break`, `continue` and assignments behave as in the unwrapped code.
-function timed_section(to, label, ex, srcfile::Union{String, Nothing} = nothing)
+# A `@label` is the one thing that cannot be duplicated, so bodies defining one
+# take the `single_copy_section` variant below.
+function timed_section(to, label, ex, srcfile::Union{String, Nothing} = nothing, debug_mod::Union{Module, Nothing} = nothing)
     @gensym to_local enabled data b₀ t₀ g₀
     # `@timeit_all` sections record the source file their label refers to
     push_call = srcfile === nothing ? :($(push!)($to_local, $label)) :
         :($(push_srcfile!)($to_local, $label, $srcfile))
+    start = Any[
+        :($data = $push_call),
+        :($g₀ = $(gc_time)()),
+        :($b₀ = $(gc_bytes)()),
+        :($t₀ = $(time_ns)()),
+    ]
     cleanup = quote
         $(do_accumulate!)($data, $t₀, $b₀, $g₀)
         $(pop!)($to_local)
     end
-    return quote
+    if defines_label(ex)
+        return single_copy_section(debug_mod, to, ex, to_local, enabled, start, cleanup)
+    end
+    core = quote
         $to_local = $to
         $enabled = $(isenabled)($to_local)
         if $enabled
-            $data = $push_call
-            $g₀ = $(gc_time)()
-            $b₀ = $(gc_bytes)()
-            $t₀ = $(time_ns)()
+            $(start...)
             $(Expr(:tryfinally, ex, cleanup))
         else
             $ex
         end
+    end
+    debug_mod === nothing && return core
+    return debug_gated(debug_mod, core, ex)
+end
+
+# Duplicating a body that defines a `@label` is a syntax error (#228), so such
+# bodies get a single copy of `ex` with an unconditional try/finally, `enabled`
+# deciding at run time whether to accumulate. Not the default because the
+# try/finally then survives even when `isenabled(to)` folds to `false`, which
+# costs a little on Julia 1.10.
+function single_copy_section(debug_mod::Union{Module, Nothing}, to, ex, to_local, enabled, start::Vector{Any}, cleanup)
+    init = quote
+        $to_local = $to
+        $enabled = $(isenabled)($to_local)
+        if $enabled
+            $(start...)
+        end
+    end
+    if debug_mod !== nothing
+        # keep `to` unevaluated when debug timings are off, as `debug_gated` does
+        init = quote
+            $enabled = false
+            if $debug_mod.timeit_debug_enabled()
+                $init
+            end
+        end
+    end
+    return quote
+        $init
+        $(
+            Expr(
+                :tryfinally, ex, quote
+                    if $enabled
+                        $cleanup
+                    end
+                end
+            )
+        )
     end
 end
 
@@ -211,16 +257,12 @@ end
 # `@timeit to label ex` for code blocks. The whole expression is escaped so the
 # user code (and its line numbers) survives verbatim into stacktraces and coverage.
 function timed_block_expr(source::LineNumberNode, mod::Module, is_debug::Bool, to, label, ex)
-    core = timed_section(to, label, ex)
-    is_debug && (core = debug_gated(mod, core, ex))
-    return Expr(:block, source, esc(core))
+    return Expr(:block, source, esc(timed_section(to, label, ex, nothing, is_debug ? mod : nothing)))
 end
 
 # an (unescaped) expression that times `ex` and evaluates to its value
 function timed_value_expr(mod::Module, is_debug::Bool, to, label, ex, srcfile::Union{String, Nothing} = nothing)
-    core = timed_section(to, label, ex, srcfile)
-    is_debug && (core = debug_gated(mod, core, ex))
-    return core
+    return timed_section(to, label, ex, srcfile, is_debug ? mod : nothing)
 end
 
 # `@timeit [to] [label] function f() ... end`
@@ -470,6 +512,14 @@ function macro_name(ex::Expr)
         name = name.name
     end
     return name
+end
+
+# `ex` defines a label, so it may not be duplicated
+function defines_label(ex)
+    ex isa Expr || return false
+    ex.head === :symboliclabel && return true
+    ex.head === :macrocall && macro_name(ex) === Symbol("@label") && return true
+    return any(defines_label, ex.args)
 end
 
 # Jumping across a `tryfinally` boundary is a lowering error, so a statement
