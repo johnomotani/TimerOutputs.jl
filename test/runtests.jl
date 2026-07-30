@@ -958,6 +958,111 @@ const dbg_168_error_line = @__LINE__() - 2
     @test any(f -> f.line == dbg_168_error_line && endswith(String(f.file), "runtests.jl"), st)
 end
 
+# a body defining a `@label` cannot be spliced into two branches (#228)
+const to_228 = TimerOutput()
+
+@timeit to_228 function goto_func_228(n)
+    i = 0
+    @label loop
+    i += 1
+    i < n && @goto loop
+    return i
+end
+
+function goto_block_228(n)
+    i = 0
+    @timeit to_228 "goto_block" begin
+        @label loop
+        i += 1
+        i < n && @goto loop
+    end
+    return i
+end
+
+@timeit_all to_228 function goto_all_228(n)
+    i = 0
+    @label loop
+    i += 1
+    i < n && @goto loop
+    return i
+end
+
+@timeit to_228 function goto_throw_228()
+    i = 0
+    @label loop
+    i += 1
+    i < 3 && @goto loop
+    error("boom")
+end
+
+@timeit TimerOutputs.NoTimerOutput() function goto_notimer_228(n)
+    i = 0
+    @label loop
+    i += 1
+    i < n && @goto loop
+    return i
+end
+
+module Debug228
+    using TimerOutputs
+    const to = TimerOutput()
+    @timeit_debug to function goto_func(n)
+        i = 0
+        @label loop
+        i += 1
+        i < n && @goto loop
+        return i
+    end
+    function goto_block(n)
+        i = 0
+        @timeit_debug to "goto_block" begin
+            @label loop
+            i += 1
+            i < n && @goto loop
+        end
+        return i
+    end
+end
+
+@testset "@label/@goto in a timed body (#228)" begin
+    @test goto_func_228(3) == 3
+    @test ncalls(to_228["goto_func_228"]) == 1
+    @test goto_block_228(4) == 4
+    @test ncalls(to_228["goto_block"]) == 1
+    @test goto_all_228(5) == 5
+    @test ncalls(to_228["goto_all_228"]) == 1
+    # every section opened above was closed again
+    @test isempty(to_228.timer_stack)
+
+    @test_throws ErrorException goto_throw_228()
+    @test ncalls(to_228["goto_throw_228"]) == 1
+    @test isempty(to_228.timer_stack)
+
+    # a disabled timer runs the body without timing it
+    disable_timer!(to_228)
+    @test goto_func_228(7) == 7
+    @test ncalls(to_228["goto_func_228"]) == 1
+    enable_timer!(to_228)
+
+    # `NoTimerOutput` still compiles away to nothing
+    @test goto_notimer_228(5) == 5
+    @test @allocated(goto_notimer_228(5)) == 0
+
+    # `@timeit_debug` does not evaluate its timer expression while disabled
+    @test Debug228.goto_func(3) == 3
+    @test Debug228.goto_block(4) == 4
+    @test isempty(Debug228.to.inner_timers)
+    TimerOutputs.enable_debug_timings(Debug228)
+    # `invokelatest` so the enable above is visible even though the `@allocated`
+    # earlier in this testset forces the whole thunk to compile at a fixed world
+    # age on Julia < 1.12
+    @test Base.invokelatest(Debug228.goto_func, 3) == 3
+    @test Base.invokelatest(Debug228.goto_block, 4) == 4
+    @test ncalls(Debug228.to["goto_func"]) == 1
+    @test ncalls(Debug228.to["goto_block"]) == 1
+    TimerOutputs.disable_debug_timings(Debug228)
+end
+
 @testset "reset_timer! inside a timed section (#172)" begin
     to = TimerOutput()
     @timeit to function foo_172(x)
