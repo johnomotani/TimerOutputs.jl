@@ -1053,8 +1053,11 @@ end
     @test Debug228.goto_block(4) == 4
     @test isempty(Debug228.to.inner_timers)
     TimerOutputs.enable_debug_timings(Debug228)
-    @test Debug228.goto_func(3) == 3
-    @test Debug228.goto_block(4) == 4
+    # `invokelatest` so the enable above is visible even though the `@allocated`
+    # earlier in this testset forces the whole thunk to compile at a fixed world
+    # age on Julia < 1.12
+    @test Base.invokelatest(Debug228.goto_func, 3) == 3
+    @test Base.invokelatest(Debug228.goto_block, 4) == 4
     @test ncalls(Debug228.to["goto_func"]) == 1
     @test ncalls(Debug228.to["goto_block"]) == 1
     TimerOutputs.disable_debug_timings(Debug228)
