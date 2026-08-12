@@ -1321,6 +1321,46 @@ end
     @test occursin("ncalls", str) && occursin("time", str)
 end
 
+@testset "pretty_table_kwargs escape hatch" begin
+    to = TimerOutput()
+    for i in 1:30
+        @timeit to "section $i" 1 + 1
+    end
+    ctx = IOContext(IOBuffer(), :limit => true, :displaysize => (10, 200))
+
+    # the splat comes last, so it overrides what TimerOutputs itself sets: here
+    # it puts back the vertical cropping that TimerOutputs turns off (#235)
+    cropped = sprint(
+        io -> show(
+            IOContext(io, ctx), to;
+            pretty_table_kwargs = (; fit_table_in_display_vertically = true)
+        )
+    )
+    @test occursin("omitted", cropped)
+    # ... including keywords TimerOutputs derives from its own arguments
+    plain = sprint((io, x) -> show(io, x; pretty_table_kwargs = (; title = "custom")), to)
+    @test occursin("custom", plain)
+
+    # keywords TimerOutputs never sets are simply forwarded: pin a
+    # non-interactive table to a fixed width instead of letting it run wide
+    narrow = sprint(
+        (io, x) -> show(
+            io, x;
+            pretty_table_kwargs = (;
+                fit_table_in_display_horizontally = true, display_size = (-1, 60),
+            )
+        ), to
+    )
+    @test all(l -> textwidth(l) <= 60, split(narrow, "\n"))
+
+    # a bare section takes the keyword too
+    sec = sprint(
+        (io, x) -> show(io, x; pretty_table_kwargs = (; title = "custom")),
+        to["section 1"]
+    )
+    @test occursin("custom", sec)
+end
+
 @testset "vertical cropping only for huge tables (#235)" begin
     to = TimerOutput()
     for i in 1:30

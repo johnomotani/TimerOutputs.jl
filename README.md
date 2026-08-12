@@ -226,6 +226,14 @@ The `print_timer([io::IO = stdout], to::TimerOutput, kwargs)`, (or `show`) takes
 * `complement::Bool` ─ also show what was *not* timed, in gray: a `~untimed~` row with the
   wall time and allocations outside all sections, and a `~name~` row under each section with
   the part not covered by its subsections (default `false`)
+* `pretty_table_kwargs::NamedTuple` ─ escape hatch forwarded verbatim to
+  [`PrettyTables.pretty_table`](https://ronisbr.github.io/PrettyTables.jl/stable/) and
+  splatted last, so it overrides anything TimerOutputs sets (default `(;)`). For example,
+  the whole table is printed no matter the terminal height;
+  `(; fit_table_in_display_vertically = true)` crops it to the display instead.
+  Note that these keywords belong to PrettyTables, not to TimerOutputs, and are therefore
+  **not covered by TimerOutputs' semantic versioning** ─ they may change when the
+  PrettyTables compat bound is raised.
 
 ## Flattening
 
